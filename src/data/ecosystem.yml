@@ -1,56 +1,186 @@
-# Community libraries built on aiogram. Read the submission policy (docs/spec.md § 7) before adding one.
-# One entry per library, `id` = unique slug. Example:
-#
-# - id: aiogram-example
-#   name: aiogram-example
-#   repo: https://github.com/someone/aiogram-example   # https, open source
-#   pypi: aiogram-example                              # optional, PyPI project name
-#   description: One line, up to 140 characters.
-#   category: utilities   # ui | i18n | storage | testing | integrations | utilities | templates
-#   maintainer: "@someone" # optional
-#   added: 2026-11-01
-- id: aiogram-i18n
-  name: aiogram_i18n
-  repo: https://github.com/aiogram/i18n
-  pypi: aiogram-i18n
-  description: Official i18n middleware for aiogram 3 with Fluent and gettext backends, lazy translations and locale managers.
-  category: i18n
-  maintainer: "@aiogram"
-  added: 2026-11-01
-- id: magic-filter
-  name: magic-filter
-  repo: https://github.com/aiogram/magic-filter
-  pypi: magic-filter
-  description: Official declarative filter builder (F.text, F.photo, F.from_user.id.in_({...})) that powers aiogram 3 magic filters.
-  category: utilities
-  maintainer: "@aiogram"
-  added: 2026-11-01
-- id: django-aiogram
-  name: django-aiogram
-  repo: https://github.com/CorneiZeR/django-aiogram
-  pypi: django-aiogram
-  description: Run aiogram next to Django and send Telegram messages from anywhere via Redis, RabbitMQ or Kafka.
-  category: integrations
-  maintainer: "@CorneiZeR"
-  added: 2026-11-01
-- id: telegram-bot-template-donbarbos
-  name: telegram-bot-template
-  repo: https://github.com/donbarbos/telegram-bot-template
-  description: "Production-oriented bot template: Postgres, Redis, Docker, Prometheus/Grafana, Sentry, admin panel, i18n."
-  category: templates
-  maintainer: "@donbarbos"
-  added: 2026-11-01
-- id: aiogram-bot-template-wakaree
-  name: aiogram_bot_template
-  repo: https://github.com/wakaree/aiogram_bot_template
-  description: Bot template with PostgreSQL (asyncpg), SQLAlchemy, Alembic, Dishka DI, Redis FSM and Fluent i18n.
-  category: templates
-  maintainer: "@wakaree"
-  added: 2026-11-01
-- id: aiogram-template-andrew000
-  name: aiogram-template
-  repo: https://github.com/andrew000/aiogram-template
-  description: "Template: aiogram 3, Fluent i18n, SQLAlchemy and Alembic, PostgreSQL, Redis, Caddy, Docker, uv."
-  category: templates
-  maintainer: "@andrew000"
-  added: 2026-11-01
+import asyncio
+import logging
+import sqlite3
+import re
+from aiogram import Bot, Dispatcher, F, types
+from aiogram.filters import CommandStart
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+
+# Bot Tokeningizni bu yerga kiriting
+BOT_TOKEN = "SIZNING_BOT_TOKENINGIZ_BU_YERGA"
+
+# Imtihon to'g'ri javoblar kaliti (namuna uchun 10 ta savol, real imtihonda 75 tagacha kengaytiriladi)
+CORRECT_ANSWERS = {
+    1: 'a', 2: 'b', 3: 'c', 4: 'd', 5: 'a',
+    6: 'c', 7: 'b', 8: 'd', 9: 'a', 10: 'b'
+}
+
+# Har bir to'g'ri javob uchun ball (Misol uchun: umumiy 75 ta savolga 100 ball qo'yilganda har biri ~1.33 ball)
+SCORE_PER_QUESTION = 2.1 
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+
+# --- BAZANI SOZLASH ---
+def init_db():
+    conn = sqlite3.connect("exam_users.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS results (
+            user_id INTEGER,
+            full_name TEXT,
+            correct INTEGER,
+            score REAL,
+            percentage REAL,
+            level TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# Asosiy menyu tugmalari
+main_menu = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="📝 Imtihon javoblarini yuborish")],
+        [KeyboardButton(text="📊 Baholash mezonlari"), KeyboardButton(text="🏆 Mening oxirgi natijam")]
+    ],
+    resize_keyboard=True
+)
+
+@dp.message(CommandStart())
+async def start_handler(message: Message):
+    await message.answer(
+        f"Assalomu alaykum, **{message.from_user.full_name}**!\n\n"
+        "🏛 **Milliy Sertifikat Imtihon Botiga** xush kelibsiz.\n"
+        "Bu yerda siz o'z bilimingizni sinab ko'rishingiz va rasmiy mezonlar asosida ball olishingiz mumkin.",
+        parse_mode="Markdown",
+        reply_markup=main_menu
+    )
+
+@dp.message(F.text == "📊 Baholash mezonlari")
+async def criteria_handler(message: Message):
+    text = (
+        "📜 **Milliy Sertifikat Foiz Mezonlari:**\n\n"
+        "• **86% - 100%** → A+ (Oliy daraja)\n"
+        "• **75% - 85.9%** → A (Yuqori daraja)\n"
+        "• **65% - 74.9%** → B+ (O'rta-yuqori)\n"
+        "• **60% - 64.9%** → B (O'rta)\n"
+        "• **55% - 59.9%** → C+ (Boshlang'ich-yuqori)\n"
+        "• **50% - 54.9%** → C (Boshlang'ich)\n"
+        "• **50% dan past** → Sertifikat berilmaydi ❌"
+    )
+    await message.answer(text, parse_mode="Markdown")
+
+@dp.message(F.text == "📝 Imtihon javoblarini yuborish")
+async def prompt_exam(message: Message):
+    await message.answer(
+        "Javoblaringizni ketma-ketlikda, orasida probelsiz harflar ko'rinishida yuboring.\n\n"
+        "**Namuna format:** `abcdacbdab`\n\n"
+        "*(Eslatma: Hozirgi test bazasi 10 ta savolga mo'ljallangan)*",
+        parse_mode="Markdown"
+    )
+
+@dp.message(F.text == "🏆 Mening oxirgi natijam")
+async def my_result_handler(message: Message):
+    user_id = message.from_user.id
+    conn = sqlite3.connect("exam_users.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT correct, score, percentage, level FROM results WHERE user_id = ? ORDER BY rowid DESC LIMIT 1", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        correct, score, percentage, level = row
+        await message.answer(
+            f"📊 **Sizning oxirgi natijangiz:**\n\n"
+            f"✅ To'g'ri javoblar: {correct} ta\n"
+            f"⭐ Ball: **{score}** ({percentage}%)\n"
+            f"🎓 Daraja: **{level}**",
+            parse_mode="Markdown"
+        )
+    else:
+        await message.answer("❌ Siz hali birorta ham test topshirmagansiz.")
+
+@dp.message(F.text)
+async def check_exam_answers(message: Message):
+    user_text = message.text.strip().lower()
+    
+    if user_text in ["📝 imtihon javoblarini yuborish", "📊 baholash mezonlari", "🏆 mening oxirgi natijam"]:
+        return
+        
+    # Faqat a, b, c, d harflarini tozalab olamiz
+    cleaned_input = re.sub(r'[^a-d]', '', user_text)
+    
+    if len(cleaned_input) < 3:
+        await message.answer("⚠️ Juda qisqa matn. Iltimos, to'liq javoblar ketma-ketligini yuboring (masalan: `abcd...`).")
+        return
+
+    total_questions = len(CORRECT_ANSWERS)
+    correct_count = 0
+    wrong_count = 0
+    details = []
+
+    for i in range(1, total_questions + 1):
+        if i - 1 < len(cleaned_input):
+            user_ans = cleaned_input[i - 1]
+            correct_ans = CORRECT_ANSWERS.get(i)
+            
+            if user_ans == correct_ans:
+                correct_count += 1
+                details.append(f"{i}. ✅ {user_ans.upper()}")
+            else:
+                wrong_count += 1
+                details.append(f"{i}. ❌ {user_ans.upper()} (To'g'ri: {correct_ans.upper()})")
+        else:
+            details.append(f"{i}. ⚪️ Belgilanmagan")
+
+    total_score = round(correct_count * SCORE_PER_QUESTION, 2)
+    percentage = round((correct_count / total_questions) * 100, 1)
+
+    # Rasmiy darajani aniqlash
+    if percentage >= 70:
+        level = "A+ (Oliy daraja)"
+    elif percentage >= 65:
+        level = "A (Yuqori daraja)"
+    elif percentage >= 60:
+        level = "B+ (O'rta-yuqori daraja)"
+    elif percentage >= 55:
+        level = "B (O'rta daraja)"
+    elif percentage >= 50:
+        level = "C+ (Boshlang'ich-yuqori)"
+    elif percentage >= 46:
+        level = "C (Boshlang'ich)"
+    else:
+        level = "Sertifikat berilmadi ❌"
+
+    # Ma'lumotlar bazasiga saqlash
+    user_id = message.from_user.id
+    full_name = message.from_user.full_name
+    conn = sqlite3.connect("exam_users.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO results VALUES (?, ?, ?, ?, ?, ?)", 
+                   (user_id, full_name, correct_count, total_score, percentage, level))
+    conn.commit()
+    conn.close()
+
+    result_msg = (
+        f"🎯 **IMTIHON NATIJASI:**\n\n"
+        f"👤 Ism: {full_name}\n"
+        f"✅ To'g'ri javoblar: {correct_count} / {total_questions}\n"
+        f"📈 Foiz ko'rsatkichi: **{percentage}%**\n"
+        f"⭐ Umumiy ball: **{total_score}**\n"
+        f"🎓 Sertifikat darajasi: **{level}**\n\n"
+        f"📋 **Batafsil xatolar tahlili:**\n" + "\n".join(details)
+    )
+
+    await message.answer(result_msg, parse_mode="Markdown")
+
+async def main():
+    logging.basicConfig(level=logging.INFO)
+    print("Milliy sertifikat imtihon boti ishga tushdi...")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
